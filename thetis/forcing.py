@@ -67,14 +67,15 @@ def compute_wind_stress(wind_u, wind_v, method='LargePond1981'):
 
 class ATMNetCDFTime(interpolation.NetCDFTimeParser):
     """
-    A TimeParser class for reading WRF/NAM atmospheric forecast files.
+    A TimeParser class for reading atmosphere model output files.
     """
-    def __init__(self, filename, max_duration=24.*3600., verbose=False):
+    def __init__(self, filename, max_duration=None, verbose=False):
         """
         :arg filename:
-        :kwarg max_duration: Time span to read from each file (in secords,
-            default one day). Forecast files are usually daily files that
-            contain forecast for > 1 days.
+        :kwarg max_duration: Time span to read from each file (in secords).
+            E.g. forecast files can consist of daily files with > 1 day of
+            data. In this case max_duration should be set to 24 h. If None,
+            all time steps are loaded. Default: None.
         :kwarg bool verbose: Se True to print debug information.
         """
         super(ATMNetCDFTime, self).__init__(filename, time_variable_name='time')
@@ -82,15 +83,19 @@ class ATMNetCDFTime(interpolation.NetCDFTimeParser):
         self.start_time = timezone.epoch_to_datetime(float(self.time_array[0]))
         self.end_time_raw = timezone.epoch_to_datetime(float(self.time_array[-1]))
         self.time_step = np.mean(np.diff(self.time_array))
-        self.max_steps = int(max_duration / self.time_step)
+        if max_duration is not None:
+            self.max_steps = int(max_duration / self.time_step)
+        else:
+            self.max_steps = self.nb_steps
         self.time_array = self.time_array[:self.max_steps]
         self.end_time = timezone.epoch_to_datetime(float(self.time_array[-1]))
         if verbose:
             print_output('Parsed file {:}'.format(filename))
-            print_output('  Raw time span: {:} -> {:}'.format(self.start_time, self.end_time_raw))
+            print_output('  Time span: {:} -> {:}'.format(self.start_time, self.end_time_raw))
             print_output('  Time step: {:} h'.format(self.time_step/3600.))
-            print_output('  Restricting duration to {:} h -> keeping {:} steps'.format(max_duration/3600., self.max_steps))
-            print_output('  New time span: {:} -> {:}'.format(self.start_time, self.end_time))
+            if max_duration is not None:
+                print_output('  Restricting duration to {:} h -> keeping {:} steps'.format(max_duration/3600., self.max_steps))
+                print_output('  New time span: {:} -> {:}'.format(self.start_time, self.end_time))
 
 
 class ATMInterpolator(object):
@@ -99,7 +104,9 @@ class ATMInterpolator(object):
     """
     def __init__(self, function_space, wind_stress_field,
                  atm_pressure_field, to_latlon,
-                 ncfile_pattern, init_date, target_coordsys, verbose=False):
+                 ncfile_pattern, init_date, target_coordsys,
+                 east_wind_var_name='uwind', north_wind_var_name='vwind',
+                 pressure_var_name='prmsl', verbose=False):
         """
         :arg function_space: Target (scalar) :class:`FunctionSpace` object onto
             which data will be interpolated.
@@ -124,7 +131,9 @@ class ATMInterpolator(object):
 
         # construct interpolators
         self.grid_interpolator = interpolation.NetCDFLatLonInterpolator2d(self.function_space, to_latlon)
-        self.reader = interpolation.NetCDFSpatialInterpolator(self.grid_interpolator, ['uwind', 'vwind', 'prmsl'])
+        var_list = [east_wind_var_name, north_wind_var_name, pressure_var_name]
+        self.reader = interpolation.NetCDFSpatialInterpolator(
+            self.grid_interpolator, var_list)
         self.timesearch_obj = interpolation.NetCDFTimeSearch(ncfile_pattern, init_date, ATMNetCDFTime, verbose=verbose)
         self.time_interpolator = interpolation.LinearTimeInterpolator(self.timesearch_obj, self.reader)
         lon = self.grid_interpolator.mesh_lonlat[:, 0]
