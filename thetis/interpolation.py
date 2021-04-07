@@ -369,15 +369,22 @@ class SpatialInterpolator2d(SpatialInterpolator):
         assert function_space.ufl_element().value_shape() == ()
 
         # construct local coordinates
-        x, y = SpatialCoordinate(function_space.mesh())
-        fsx = Function(function_space).interpolate(x).dat.data_with_halos
-        fsy = Function(function_space).interpolate(y).dat.data_with_halos
+        on_sphere = function_space.mesh().geometric_dimension() == 3
 
-        mesh_lonlat = []
-        for node in range(len(fsx)):
-            lat, lon = to_latlon(fsx[node], fsy[node])
-            mesh_lonlat.append((lon, lat))
-        self.mesh_lonlat = np.array(mesh_lonlat)
+        if on_sphere:
+            x, y, z = SpatialCoordinate(function_space.mesh())
+            fsx = Function(function_space).interpolate(x).dat.data_with_halos
+            fsy = Function(function_space).interpolate(y).dat.data_with_halos
+            fsz = Function(function_space).interpolate(z).dat.data_with_halos
+            coords = (fsx, fsy, fsz)
+        else:
+            x, y = SpatialCoordinate(function_space.mesh())
+            fsx = Function(function_space).interpolate(x).dat.data_with_halos
+            fsy = Function(function_space).interpolate(y).dat.data_with_halos
+            coords = (fsx, fsy)
+
+        lat, lon = to_latlon(*coords)
+        self.mesh_lonlat = np.array([lon, lat]).T
 
         self._initialized = False
 

@@ -104,7 +104,8 @@ class ATMInterpolator(object):
     """
     def __init__(self, function_space, wind_stress_field,
                  atm_pressure_field, to_latlon,
-                 ncfile_pattern, init_date, target_coordsys,
+                 ncfile_pattern, init_date, target_coordsys=None,
+                 vect_rotator=None,
                  east_wind_var_name='uwind', north_wind_var_name='vwind',
                  pressure_var_name='prmsl', verbose=False):
         """
@@ -121,8 +122,12 @@ class ATMInterpolator(object):
         :arg init_date: A :class:`datetime` object that indicates the start
             date/time of the Thetis simulation. Must contain time zone. E.g.
             'datetime(2006, 5, 1, tzinfo=pytz.utc)'
-        :arg target_coordsys: coordinate system in which the model grid is
+        :kwarg target_coordsys: coordinate system in which the model grid is
             defined. This is used to rotate vectors to local coordinates.
+        :kwarg vect_rotator: function that rotates vectors from ENU coordinates
+            to target function space (optional).
+        :kwarg east_wind_var_name, north_wind_var_name, pressure_var_name:
+            wind component and pressure field names in netCDF file.
         :kwarg bool verbose: Se True to print debug information.
         """
         self.function_space = function_space
@@ -138,8 +143,13 @@ class ATMInterpolator(object):
         self.time_interpolator = interpolation.LinearTimeInterpolator(self.timesearch_obj, self.reader)
         lon = self.grid_interpolator.mesh_lonlat[:, 0]
         lat = self.grid_interpolator.mesh_lonlat[:, 1]
-        self.vect_rotator = coordsys.VectorCoordSysRotation(
-            coordsys.LL_WGS84, target_coordsys, lon, lat)
+        assert target_coordsys is not None or vect_rotator is not None, \
+            'Either target_coordsys or vect_rotator must be defined'
+        if vect_rotator is None:
+            self.vect_rotator = coordsys.VectorCoordSysRotation(
+                coordsys.LL_WGS84, target_coordsys, lon, lat)
+        else:
+            self.vect_rotator = vect_rotator
 
     def set_fields(self, time):
         """
@@ -150,11 +160,17 @@ class ATMInterpolator(object):
 
         :arg float time: Thetis simulation time in seconds.
         """
-        lon_wind, lat_wind, prmsl = self.time_interpolator(time)
-        u_wind, v_wind = self.vect_rotator(lon_wind, lat_wind)
-        u_stress, v_stress = compute_wind_stress(u_wind, v_wind)
-        self.wind_stress_field.dat.data_with_halos[:, 0] = u_stress
-        self.wind_stress_field.dat.data_with_halos[:, 1] = v_stress
+        east_wind, north_wind, prmsl = self.time_interpolator(time)
+        east_strs, north_strs = compute_wind_stress(east_wind, north_wind)
+        if self.wind_stress_field.geometric_dimension() == 3:
+            u_strs, v_strs, z_strs = self.vect_rotator(east_strs, north_strs)
+            self.wind_stress_field.dat.data_with_halos[:, 0] = u_strs
+            self.wind_stress_field.dat.data_with_halos[:, 1] = v_strs
+            self.wind_stress_field.dat.data_with_halos[:, 2] = z_strs
+        else:
+            u_strs, v_strs = self.vect_rotator(east_strs, north_strs)
+            self.wind_stress_field.dat.data_with_halos[:, 0] = u_strs
+            self.wind_stress_field.dat.data_with_halos[:, 1] = v_strs
         self.atm_pressure_field.dat.data_with_halos[:] = prmsl
 
 
@@ -701,7 +717,7 @@ class TidalBoundaryForcing(object):
         :kwarg boundary_ids: list of boundary_ids where tidal data will be
             evaluated. If not defined, tides will be in evaluated in the entire
             domain.
-        :kward data_dir: path to directory where tidal model netCDF files are
+        :kwarg data_dir: path to directory where tidal model netCDF files are
             located.
         """
         assert init_date.tzinfo is not None, 'init_date must have time zone information'
