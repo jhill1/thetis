@@ -780,17 +780,27 @@ class GenericInterpolator2D(object):
     with CF standard_name attributes "latitude" and "longitude". Time must be
     defined with cftime compliant units and metadata.
     """
-    def __init__(self, function_space, fields, field_names, ncfile_pattern, init_date, to_latlon):
+    def __init__(self, function_space, fields, field_names, ncfile_pattern,
+                 init_date, to_latlon, vector_field=None,
+                 vector_components=None, vector_rotator=None):
         self.function_space = function_space
         for f in fields:
             assert f.function_space() == self.function_space, 'field \'{:}\' does not belong to given function space {:}.'.format(f.name(), self.function_space.name)
         assert len(fields) == len(field_names)
         self.fields = fields
-        self.field_names = field_names
-
+        self.field_names = list(field_names)
+        self.scalar_field_index = list(range(len(field_names)))
+        self.rotate_velocity = vector_components is not None
+        if self.rotate_velocity:
+            assert vector_field is not None, 'vector_field must be provided'
+            assert vector_rotator is not None, 'vect_rotator function must be provided'
+            self.field_names += list(vector_components)
+            self.vector_field_index = [self.field_names.index(c) for c in vector_components]
+            self.vect_rotator = vector_rotator
+            self.vector_field = vector_field
         # construct interpolators
         self.grid_interpolator = GenericSpatialInterpolator2D(self.function_space, to_latlon)
-        self.reader = interpolation.NetCDFSpatialInterpolator(self.grid_interpolator, field_names)
+        self.reader = interpolation.NetCDFSpatialInterpolator(self.grid_interpolator, self.field_names)
         # TODO generalize _get_nc_var_name and use it for time dimension as well
         self.timesearch_obj = interpolation.NetCDFTimeSearch(ncfile_pattern, init_date, interpolation.NetCDFTimeParser, time_variable_name='time', verbose=False)
         self.time_interpolator = interpolation.LinearTimeInterpolator(self.timesearch_obj, self.reader)
@@ -800,7 +810,20 @@ class GenericInterpolator2D(object):
         Evaluates forcing fields at the given time
         """
         vals = self.time_interpolator(time)
-        for i in range(len(self.fields)):
+        if self.rotate_velocity:
+            i, j = self.vector_field_index
+            east_comp = vals[i]
+            north_comp = vals[j]
+            if self.vector_field.geometric_dimension() == 3:
+                u, v, w = self.vect_rotator(east_comp, north_comp)
+                self.vector_field.dat.data_with_halos[:, 0] = u
+                self.vector_field.dat.data_with_halos[:, 1] = v
+                self.vector_field.dat.data_with_halos[:, 2] = w
+            else:
+                u, v = self.vect_rotator(east_comp, north_comp)
+                self.vector_field.dat.data_with_halos[:, 0] = u
+                self.vector_field.dat.data_with_halos[:, 1] = v
+        for i in self.scalar_field_index:
             self.fields[i].dat.data_with_halos[:] = vals[i]
 
 
