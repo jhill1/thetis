@@ -1080,3 +1080,293 @@ class FES2004TidalBoundaryForcing(TidalBoundaryForcing):
         msg = 'File {:} not found, download it from \nftp://ftp.legos.obs-mip.fr/pub/soa/maree/tide_model/global_solution/fes2004/'.format(f_elev)
         assert os.path.exists(f_elev), msg
         self.tnci = uptide.tidal_netcdf.FESTidalInterpolator(self.tide, f_elev, ranges=self.ranges)
+
+class TidalForcing:
+    """Implement astonomical tidal forcing"""
+
+    self.frequencies = {
+            "M2": 1.40519E-04,
+            "S2": 1.45444E-04,
+            "N2": 1.3788E-04,
+            "K2": 1.45842E-04,
+            "K1": 0.72921E-04,
+            "O1": 0.67598E-04,
+            "P1": 0.72523E-04,
+            "Q1": 0.64959E-04,
+            "MF": 0.053234E-04,
+            "MM": 0.026392E-04,
+            "SSA": 0.003982E-04,
+        }
+    self.amplitudes = {
+            "M2": 0.242334
+            "S2": 0.112841
+            "N2": 0.046398
+            "K2": 0.030704
+            "K1": 0.141565
+            "O1": 0.100514
+            "P1": 0.046843
+            "Q1": 0.019256
+            "MF": 0.041742
+            "MM": 0.022026
+            "SSA": 0.019446
+    }
+
+    @staticmethod
+    def get_tidal_frequency(constituent):
+        """
+        Returns the tidal frequency for a given constituent.
+
+        Args:
+            constituent (str): The tidal constituent (e.g., "M2", "S2").
+
+        Returns:
+            float: The tidal frequency in radians per second.
+
+        Raises:
+            ValueError: If the tidal constituent is unknown.
+        """
+        constituent = constituent.strip().upper()
+        if constituent in frequencies:
+            return self.frequencies[constituent]
+        else:
+            raise ValueError(f"Unknown tidal constituent: {constituent}")
+
+    @staticmethod
+    def find_chi(nchi, acctim, horiz_rescale):
+        """
+        Calculates the astronomical arguments (chi in radians) for tidal constituents.
+
+        Args:
+            nchi (int): The number of tidal constituents.
+            acctim (float): Accumulated time.
+            horiz_rescale (float): Horizontal rescale factor for time.
+
+        Returns:
+            numpy.ndarray: An array of chi values (in radians) for each constituent.
+        """
+        degrad = 57.2957795131  # 360 / (2 * pi)
+        h01 = 279.69668
+        h02 = 36000.768930485
+        h03 = 3.03E-04
+        s01 = 270.434358
+        s02 = 481267.88314137
+        s03 = -0.001133
+        s04 = 1.9E-06
+        p01 = 334.329653
+        p02 = 4069.0340329575
+        p03 = -0.010325
+        p04 = -1.2E-05
+        t1 = 0.7499657911
+        t2 = 0.0000273785
+
+        day0 = 1.0
+        year0 = 1975.0
+
+        tim = acctim * horiz_rescale
+        day = day0 + tim / 86400.0
+        year = year0 + tim / 31536000.0
+        d = day + 365.0 * (year - 1975.0) + int(((year - 1975.0)) / 4.0)
+        t = t1 + t2 * d
+        h0 = h01 + h02 * t + h03 * (t**2.0)
+        s0 = s01 + s02 * t + s03 * (t**2.0) + s04 * (t**3.0)
+        p0 = p01 + p02 * t + p03 * (t**2.0) + p04 * (t**3.0)
+
+        chi = np.zeros(nchi)
+        chi[0] = 2 * h0 - 2 * s0  # M2
+        chi[1] = 0.0  # S2
+        chi[2] = 2 * h0 - 3 * s0 + p0  # N2
+        chi[3] = 2 * h0  # K2
+        chi[4] = h0 + 90.0  # K1
+        chi[5] = h0 - 2 * s0 - 90.0  # O1
+        chi[6] = h0 - 90.0  # P1
+        chi[7] = h0 - 3 * s0 + p0 - 90.0  # Q1
+        chi[8] = 2 * s0  # Mf
+        chi[9] = s0 - p0  # Mm
+        chi[10] = 2 * h0  # Ssa
+        chi[11] = 0.0
+
+        chi_radians = chi / degrad
+        return chi_radians
+
+    @staticmethod
+    def equilibrium_tide(which_tide, lat, lon, acctim, horiz_rescale):
+        """
+        Calculates the equilibrium tide.
+        #####################################################################
+        See E.W. Schwiderski - Rev. Geophys. Space Phys. Vol. 18 No. 1 pp. 243--268, 1980
+        for details of these parameters
+
+        Args:
+            which_tide (list or numpy.ndarray): A boolean array indicating which tidal components to include.
+            lat (float): Latitude in degrees.
+            lon (float): Longitude in degrees.
+            acctim (float): Accumulated time.
+            horiz_rescale (float): Horizontal rescale factor for time.
+
+        Returns:
+            float: The equilibrium tide.
+        """
+        degrad = 57.29577951308232  # 360 / (2 * pi)
+        piover2 = 1.57079632679490  # pi / 2
+
+        eqtide = 0.0
+        colat = piover2 - (lat * math.pi / 180.0)
+        twolong = 2.0 * (lon * math.pi / 180.0)
+        twocolat = 2.0 * colat
+        time = acctim * horiz_rescale
+
+        nchi = 12
+        chi = np.zeros(nchi)
+        chi = self.find_chi(nchi, acctim, horiz_rescale)
+
+        if which_tide[0]:  # M2
+            eqtide += self.amplitudes["M2"] * (math.sin(colat)**2.0) * 
+                      math.cos(self.frequencies["M2"] * time + twolong + chi[0])
+        if which_tide[1]:  # S2
+            eqtide += self.amplitudes["S2"] * (math.sin(colat)**2.0) * 
+                      math.cos(self.frequencies["S2"] * time + twolong + chi[1])
+        if which_tide[2]:  # N2
+            eqtide += self.amplitudes["N2"] * (math.sin(colat)**2.0) * 
+                      math.cos(self.frequencies["N2"] * time + twolong + chi[2])
+        if which_tide[3]:  # K2
+            eqtide += self.amplitudes["K2"] * (math.sin(colat)**2.0) * 
+                      math.cos(self.frequencies["K2"] * time + twolong + chi[3])
+        if which_tide[4]:  # K1
+            eqtide += self.amplitudes["K1"] * (math.sin(twocolat)) * 
+                      math.cos(self.frequencies["K1"] * time + (lon * math.pi / 180.0) + chi[4])
+        if which_tide[5]:  # O1
+            eqtide += self.amplitudes["O1"] * (math.sin(twocolat)) * 
+                      math.cos(self.frequencies["O1"] * time + (lon * math.pi / 180.0) + chi[5])
+        if which_tide[6]:  # P1
+            eqtide += self.amplitudes["P1"] * (math.sin(twocolat)) * 
+                      math.cos(self.frequencies["P1"] * time + (lon * math.pi / 180.0) + chi[6])
+        if which_tide[7]:  # Q1
+            eqtide += self.amplitudes["Q1"] * (math.sin(twocolat)) * 
+                      math.cos(self.frequencies["Q1"] * time + (lon * math.pi / 180.0) + chi[7])
+        if which_tide[8]:  # Mf
+            eqtide += self.amplitudes["MF"] * (3 * (math.sin(colat)**2.0) - 2.0) * 
+                      math.cos(self.frequencies["MF"] * time + chi[8])
+        if which_tide[9]:  # Mm
+            eqtide += self.amplitudes["MM"] * (3 * (math.sin(colat)**2.0) - 2.0) * 
+                      math.cos(self.frequencies["MM"] * time + chi[9])
+        if which_tide[10]: # Ssa
+            eqtide += self.amplitudes["SSA"] * (3 * (math.sin(colat)**2.0) - 2.0) * 
+                      math.cos(self.frequencies["SSA"] * time + chi[10])
+
+        return eqtide
+
+    @staticmethod
+    def compute_pressure_and_tidal_gradient(state, delta_u, ct_m, p_theta, position):
+        """
+        Computes the gradient of pressure and the tidal forcing term.
+
+        Args:
+            state: Represents the simulation state (implementation dependent).
+            delta_u: Represents the change in velocity field (implementation dependent).
+            ct_m: Represents the transpose of the gradient operator matrix (implementation dependent).
+            p_theta: Represents the potential pressure field (implementation dependent).
+            position: Represents the position vector field (implementation dependent).
+        """
+        # Placeholder for accessing mesh from pressure field
+        # Assuming 'p_theta' has a 'mesh' attribute.
+        try:
+            p_mesh = p_theta.get("mesh") # Example
+        except AttributeError:
+            print("Warning: p_theta object does not have a 'mesh' attribute.")
+            return
+
+        # Placeholder for extracting free surface field
+        # Assuming 'state' has a method 'extract_scalar_field'.
+        try:
+            free_surface = state.get("FreeSurface") # Example
+        except KeyError:
+            print("Warning: FreeSurface field not found in state.")
+            return
+
+        # Placeholder for allocating combined and tidal pressure fields
+        # Assuming a class 'ScalarField' exists and has an 'allocate' and 'zero' method.
+        try:
+            combined_p = np.zeros(len(p_theta)) # Example using numpy array
+            tidal_pressure = np.zeros(len(p_theta)) # Example using numpy array
+        except Exception as e:
+            print(f"Error allocating pressure fields: {e}")
+            return
+
+        # Placeholder for mapping position to pressure space
+        # Assuming a function 'remap_field' exists.
+        positions_mapped_to_pressure_space = position # Assuming direct access for now
+
+        # Tidal forcing flags
+        which_tide = [True] * 11
+        # Placeholder for option checking
+        # Example:
+        # if get_option('/ocean_forcing/tidal_forcing/all_tidal_components'):
+        #     which_tide = [True] * 11
+        # else:
+        #     if get_option('/ocean_forcing/tidal_forcing/M2'):
+        #         which_tide[0] = True
+        #     # ... and so on for other constituents
+
+        love_number = 1.0
+        # Placeholder for getting love number option
+        # Example:
+        # if get_option('/ocean_forcing/tidal_forcing/love_number'):
+        #     love_number = get_option('/ocean_forcing/tidal_forcing/love_number/value')
+
+        current_time = state.get("current_time", 0.0) # Placeholder for getting current time
+        gravity_magnitude = state.get("gravity_magnitude", 9.8) # Placeholder for getting gravity
+
+        beta = 0.0
+        # Placeholder for getting SAL beta option
+        # Example:
+        # beta = get_option('/ocean_forcing/tidal_forcing/sal/beta', default=0.0)
+
+        # Placeholder for geometry check and tidal pressure calculation
+        spherical_earth = True # Placeholder for checking geometry option
+        if get_option('/geometry/spherical_earth/'):
+            try:
+                num_nodes = len(positions_mapped_to_pressure_space)
+                for node in range(num_nodes):
+                    pos = positions_mapped_to_pressure_space[node]
+                    # Placeholder for LongitudeLatitude function
+                    # Assuming 'pos' contains (x, y, z) or similar, and we need to extract lat/lon.
+                    # Example (very simplified):
+                    lon_rad = math.atan2(pos[1], pos[0])
+                    lat_rad = math.asin(pos[2] / np.linalg.norm(pos))
+                    long = math.degrees(lon_rad)
+                    lat = math.degrees(lat_rad)
+
+                    sal_term = free_surface[node] * beta # Example access
+                    eqtide = TidalModule.equilibrium_tide(which_tide, lat, long, current_time, 1.0)
+                    eqtide = love_number * eqtide - sal_term
+                    tidal_pressure[node] = eqtide * gravity_magnitude # Example setting value
+            except Exception as e:
+                print(f"Error calculating tidal pressure: {e}")
+                return
+        else:
+            print("Tidal forcing in non-spherical geometries is yet to be added.")
+            # Placeholder for FLExit equivalent
+            # raise NotImplementedError("Tidal forcing for non-spherical geometries")
+
+        # Combine pressure terms
+        try:
+            num_nodes_p = len(p_theta)
+            for node in range(num_nodes_p):
+                combined_p[node] = p_theta[node] - tidal_pressure[node] - equilibrium_pressure[node] # Example access
+        except Exception as e:
+            print(f"Error combining pressure terms: {e}")
+            return
+
+        # Placeholder for applying the transpose of the gradient operator
+        # Assuming 'mult_T' function (or equivalent method on 'ct_m') exists.
+        # This would involve a matrix-vector product.
+        try:
+            # delta_u = ct_m.multiply_transpose(combined_p) # Example if ct_m is a matrix object
+            print("Placeholder: Applying transpose of gradient operator (ct_m * combined_p)")
+            pass # Replace with actual matrix-vector multiplication
+        except Exception as e:
+            print(f"Error applying gradient operator: {e}")
+            return
+
+        # Placeholder for deallocation if needed
+        pass

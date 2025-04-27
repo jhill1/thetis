@@ -572,6 +572,12 @@ class NonhydrostaticModelOptions(FrozenHasTraits):
     }).tag(config=True)
 
 
+class AstronomicalTidalForcingOptions(FrozenHasTraits):
+    """Options for astronomical tidal forcing on the sphere"""
+    name = "Tidal forcing models"
+    add_tidal_forcing = Bool(False, help="Add terms for astronomical tidal forcing").tag(config=True)
+
+
 class CommonModelOptions(FrozenConfigurable):
     """Options that are common for both 2d and 3d models"""
     name = 'Model options'
