@@ -1110,6 +1110,7 @@ class TidalForcing:
             "MM": 0.022026
             "SSA": 0.019446
     }
+    self.nchi = 12
 
     @staticmethod
     def get_tidal_frequency(constituent):
@@ -1132,12 +1133,11 @@ class TidalForcing:
             raise ValueError(f"Unknown tidal constituent: {constituent}")
 
     @staticmethod
-    def find_chi(nchi, acctim, horiz_rescale):
+    def find_chi(acctim, horiz_rescale):
         """
         Calculates the astronomical arguments (chi in radians) for tidal constituents.
 
         Args:
-            nchi (int): The number of tidal constituents.
             acctim (float): Accumulated time.
             horiz_rescale (float): Horizontal rescale factor for time.
 
@@ -1171,7 +1171,7 @@ class TidalForcing:
         s0 = s01 + s02 * t + s03 * (t**2.0) + s04 * (t**3.0)
         p0 = p01 + p02 * t + p03 * (t**2.0) + p04 * (t**3.0)
 
-        chi = np.zeros(nchi)
+        chi = np.zeros(self.nchi)
         chi[0] = 2 * h0 - 2 * s0  # M2
         chi[1] = 0.0  # S2
         chi[2] = 2 * h0 - 3 * s0 + p0  # N2
@@ -1215,9 +1215,8 @@ class TidalForcing:
         twocolat = 2.0 * colat
         time = acctim * horiz_rescale
 
-        nchi = 12
-        chi = np.zeros(nchi)
-        chi = self.find_chi(nchi, acctim, horiz_rescale)
+        chi = np.zeros(self.nchi)
+        chi = self.find_chi(self.nchi, acctim, horiz_rescale)
 
         if which_tide[0]:  # M2
             eqtide += self.amplitudes["M2"] * (math.sin(colat)**2.0) * 
