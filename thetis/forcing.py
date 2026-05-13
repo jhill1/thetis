@@ -1177,6 +1177,7 @@ class EquilibriumTidalForcing:
         self.beta = beta
         # Scaling factor for the degree-2 response
         self.alpha = (self.rho_w / self.rho_e) * 0.69 
+        self.sal_potential = None
 
         self.frequencies = {
             "M2": 1.405189e-04, "S2": 1.454441e-04, "N2": 1.378797e-04,
@@ -1192,9 +1193,7 @@ class EquilibriumTidalForcing:
         }
         self.constituents = list(self.frequencies.keys())
 
-        if !(beta == None):
-            # user supplied beta factor, so don't calculate SAL
-
+        if beta == None:
             # Function Space and Solver setup
             V = FunctionSpace(mesh, "CG", 1)
             self.sal_potential = Function(V, name="SAL_Potential")
@@ -1232,20 +1231,18 @@ class EquilibriumTidalForcing:
             h0+90, h0-2*s0-90, h0-90, h0-3*s0+p0-90,       # K1, O1, P1, Q1
             2*s0, s0-p0, 2*h0                              # MF, MM, SSA
         ]
-        return np.radians(chi)
+        return numpy.radians(chi)
 
     
-    def get_equilibrium_tide_expression(self, mesh, acctim, which_tide=None):
+    def get_equilibrium_tide_expression(self, acctim, which_tide=None):
         """
         Returns a UFL expression for the equilibrium tide potential.
         This is preferred in Thetis as it integrates directly into the solver.
         """
-        if which_tide is None:
-            which_tide = [True] * self.nchi
 
         # Get lat/lon from mesh coordinates (assuming spherical)
         # R is Earth's radius, typically defined in the mesh or constant
-        x, y, z = SpatialCoordinate(mesh)
+        x, y, z = SpatialCoordinate(self.mesh)
         r = sqrt(x**2 + y**2 + z**2)
         
         phi = asin(z / r)       # Latitude
@@ -1254,6 +1251,9 @@ class EquilibriumTidalForcing:
         
         chi = self.find_chi(acctim)
         eq_tide = 0.0
+        if which_tide is None:
+            which_tide = [True] * len(chi)
+
 
         # Semidiurnal (Species 2)
         for i in range(4):
@@ -1279,7 +1279,7 @@ class EquilibriumTidalForcing:
         return eq_tide
 
 
-    def update_forcing(self, tidal_field, eta, acctim):
+    def update_forcing(self, tidal_field, eta, acctim, elev_2d):
         """
         total_forcing_field: The field used in momentum (meters)
         eta: Current free surface elevation Function
@@ -1289,20 +1289,14 @@ class EquilibriumTidalForcing:
         self.eta_input.assign(eta)
         self.sal_solver.solve()
 
-        # 2. Compute Astronomical Equilibrium Tide Expression
-        x, y, z = SpatialCoordinate(self.mesh)
-        r = sqrt(x**2 + y**2 + z**2)
-        phi = asin(z / r)
-        lam = atan2(y, x)
-        colat = pi/2 - phi
         chi = self.find_chi(acctim)
 
         # Species logic
-        eq_tide = self.get_equilibrium_tide_expression(mesh, acctim)
+        eq_tide = self.get_equilibrium_tide_expression(acctim)
         
         # Apply Love number (Earth tide reduction) and SAL (Self-Attraction/Loading)
-        if free_surface is not None and beta != None:
-            tidal_field.project(love_number * eq_expr - (beta * free_surface))
+        if self.beta != None:
+            tidal_field.project(love_number * eq_expr - (beta * elev_2d))
         else:
             # 3. Combine: Total Potential = (Love * Eq) + SAL
             # We project this onto the total_forcing_field
