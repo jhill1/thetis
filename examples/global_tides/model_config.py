@@ -101,6 +101,14 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     t_export = 3600.0
     t_end = (end_date - start_date).total_seconds()
 
+    # 3. Create Function Spaces and Fields
+    # Use the solver's native elevation space (handles CG or DG automatically)
+    V_elev = solver_obj.function_spaces.H_2d 
+
+    tidal_forcing = TidalForcing(mesh2d, l_smooth=150000.0)
+    total_forcing_meters = Function(V_elev, name="Tidal_Forcing_Meters")
+    p_atm_tidal = Function(V_elev, name="Tidal_Pressure_Pascals")
+
     # Create solver
     solver_obj = solver2d.FlowSolver2d(mesh2d, bathymetry_2d)
     options = solver_obj.options
@@ -113,14 +121,20 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     options.simulation_initial_date = start_date
     options.simulation_end_date = end_date
     options.simulation_export_time = t_export
-    options.swe_timestepper_type = "DIRK22"
+    options.swe_timestepper_type = "CrankNicolson"
     options.swe_timestepper_options.use_semi_implicit_linearization = True
     options.timestep = dt
     options.fields_to_export = ["elev_2d", "uv_2d"]
     options.fields_to_export_hdf5 = []
+    options.atmospheric_pressure = p_atm_tidal
+
+    # Constant physical parameters
+    rho_0 = 1025.0  # Reference water density (kg/m^3)
+    g = 9.81        # Gravitational acceleration (m/s^2)
 
     # The mesh is quite coarse, so it is reasonable to solve the underlying
     # linear systems by applying a full LU decomposition as a preconditioner
+    # CHECK THIS
     options.swe_timestepper_options.solver_parameters = {
         "snes_type": "newtonls",
         "ksp_type": "preonly",
@@ -146,34 +160,6 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
             )
             solver_obj.add_callback(cb)
 
-    elev_tide_2d = Function(solver_obj.function_spaces.P1_2d, name="Tidal elevation")
-    if os.getenv("THETIS_REGRESSION_TEST") is None:
-        # Setup forcings
-        data_dir = os.path.join(os.environ.get("DATA", "./data"), "tpxo")
-        if not os.path.exists(data_dir):
-            raise IOError(f"Data directory {data_dir} does not exist")
-        forcing_constituents = ["Q1", "O1", "P1", "K1", "N2", "M2", "S2", "K2"]
-        tbnd = forcing.TPXOTidalBoundaryForcing(
-            elev_tide_2d,
-            start_date,
-            coord_system,
-            data_dir=data_dir,
-            constituents=forcing_constituents,
-            boundary_ids=[100],
-        )
-
-        # Set time to zero for the tidal forcings
-        tbnd.set_tidal_field(0.0)
-    else:
-        # for CI testing setup dummy tbnd - as we don't want to commit TPXO data files
-        elev_tide_2d.assign(1.)
-
-        def set_tidal_field(t):
-            pass
-
-        tbnd = types.SimpleNamespace()
-        tbnd.set_tidal_field = set_tidal_field
-
     # Account for spinup
     bnd_time = Constant(0.0)
     if spinup:
@@ -185,11 +171,24 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
 
     # Setup boundary conditions for open ocean segments
     solver_obj.bnd_functions["shallow_water"] = {
-        100: {"elev": tide_elev_expr_2d, "uv": Constant(as_vector([0, 0]))},
+        223: {"elev": tide_elev_expr_2d, "uv": Constant(as_vector([0, 0]))},
     }
 
     def update_forcings(t):
-        bnd_time.assign(t)
-        tbnd.set_tidal_field(t)
+        """
+        Executed by Thetis at every time-step loop.
+        Updates the tidal potential and SAL based on current model state.
+        """
+        # Extract the live water elevation field from the solver
+        # (Firedrake handles parallel synchronization of this field automatically)
+        current_eta = solver_obj.fields.elev_2d
+        tidal_forcing.update_forcing(total_forcing_meters, current_eta, t_new)
+        p_atm_tidal.assign(-rho_0 * g * total_forcing_meters)
+        
+        # Compute Equilibrium Tide + solve the PDE for SAL
+        tidal_forcing.update_forcing(total_forcing_meters, current_eta, t)
+        
+        # Convert meters of head into Pascals of pressure and assign to the solver option
+        p_atm_tidal.assign(-rho_0 * g * total_forcing_meters)
 
     return solver_obj, start_date, update_forcings
