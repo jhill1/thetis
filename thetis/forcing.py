@@ -1159,24 +1159,16 @@ class FES2004TidalBoundaryForcing(TidalBoundaryForcing):
         assert os.path.exists(f_elev), msg
         self.tnci = uptide.tidal_netcdf.FESTidalInterpolator(self.tide, f_elev, ranges=self.ranges)
 
-
 class EquilibriumTidalForcing:
 
     def __init__(self, mesh, beta=None, l_smooth=100000.0, love_number=0.69):
-        """
-        mesh: The global mesh.
-        l_smooth: Smoothing length in meters (e.g., 100km). 
-                  Controls the non-locality of the SAL effect.
-        love_number: The potential reduction factor (default 0.69).
-        """
         self.mesh = mesh
         self.love_number = love_number
         self.l_smooth = l_smooth
         self.rho_w = 1025.0
         self.rho_e = 5515.0
         self.beta = beta
-        # Scaling factor for the degree-2 response
-        self.alpha = (self.rho_w / self.rho_e) * 0.69 
+        self.alpha = (self.rho_w / self.rho_e) * love_number 
         self.sal_potential = None
 
         self.frequencies = {
@@ -1193,15 +1185,54 @@ class EquilibriumTidalForcing:
         }
         self.constituents = list(self.frequencies.keys())
 
-        if beta == None:
-            # Function Space and Solver setup
-            V = FunctionSpace(mesh, "CG", 1)
+        # Create a single persistent UFL expression for the equilibrium tide
+        # using time placeholder coefficients
+        self.spatial_components = {}
+        
+        # Pre-compute spatial coordinate geometry once
+        x, y, z = SpatialCoordinate(self.mesh)
+        r = sqrt(x**2 + y**2 + z**2)
+        phi = asin(z / r)       # Latitude
+        lam = atan2(y, x)       # Longitude
+        colat = pi/2 - phi
+
+        # Define time coefficients as mutable Constants
+        # This keeps the symbolic tree identical while changing numerical values!
+        self.cos_coeffs = {c: Constant(0.0) for c in self.constituents}
+        self.sin_coeffs = {c: Constant(0.0) for c in self.constituents}
+
+        # Build one permanent symbolic UFL expression structure
+        self.eq_tide_expr = 0.0
+
+        # Semidiurnal (Species 2)
+        for i in range(4):
+            c = self.constituents[i]
+            # Trigonometric identity: cos(A + B) = cos(A)cos(B) - sin(A)sin(B)
+            # A = spatial (2*lam), B = temporal (omega*t + chi)
+            spatial_cos = self.amplitudes[c] * (sin(colat)**2) * cos(2*lam)
+            spatial_sin = self.amplitudes[c] * (sin(colat)**2) * sin(2*lam)
+            self.eq_tide_expr += (self.cos_coeffs[c] * spatial_cos - self.sin_coeffs[c] * spatial_sin)
+
+        # Diurnal (Species 1)
+        for i in range(4, 8):
+            c = self.constituents[i]
+            spatial_cos = self.amplitudes[c] * sin(2*colat) * cos(lam)
+            spatial_sin = self.amplitudes[c] * sin(2*colat) * sin(lam)
+            self.eq_tide_expr += (self.cos_coeffs[c] * spatial_cos - self.sin_coeffs[c] * spatial_sin)
+
+        # Long-period (Species 0)
+        for i in range(8, 11):
+            c = self.constituents[i]
+            spatial_shape = self.amplitudes[c] * (3 * sin(phi)**2 - 1)
+            self.eq_tide_expr += self.cos_coeffs[c] * spatial_shape
+
+        # Pre-compile the global PDE solver for SAL if active
+        if beta is None:
+            V = FunctionSpace(mesh, "DG", 1)
             self.sal_potential = Function(V, name="SAL_Potential")
-            
-            # Pre-compile the SAL Linear Solver
             u = TrialFunction(V)
             v = TestFunction(V)
-            self.eta_input = Function(V) # Placeholder for current free surface
+            self.eta_input = Function(V)
             
             a = (u * v + Constant(self.l_smooth**2) * inner(grad(u), grad(v))) * dx
             L = Constant(self.alpha) * self.eta_input * v * dx
@@ -1209,14 +1240,10 @@ class EquilibriumTidalForcing:
             prob = LinearVariationalProblem(a, L, self.sal_potential)
             self.sal_solver = LinearVariationalSolver(
                 prob, 
-                solver_parameters={
-                    'ksp_type': 'cg',
-                    'pc_type': 'gamg', # Algebraic Multigrid for global Poisson
-                }
+                solver_parameters={'ksp_type': 'cg', 'ksp_rtol': 1e-4, 'pc_type': 'gamg'}
             )
 
     def find_chi(self, acctim):
-        """Standard astronomical arguments."""
         t1, t2 = 0.7499657911, 0.0000273785
         day0 = 1.0 + (acctim / 86400.0)
         year0 = 1975.0 + (acctim / 31536000.0)
@@ -1233,73 +1260,26 @@ class EquilibriumTidalForcing:
         ]
         return numpy.radians(chi)
 
-    
-    def get_equilibrium_tide_expression(self, acctim, which_tide=None):
-        """
-        Returns a UFL expression for the equilibrium tide potential.
-        This is preferred in Thetis as it integrates directly into the solver.
-        """
-
-        # Get lat/lon from mesh coordinates (assuming spherical)
-        # R is Earth's radius, typically defined in the mesh or constant
-        x, y, z = SpatialCoordinate(self.mesh)
-        r = sqrt(x**2 + y**2 + z**2)
-        
-        phi = asin(z / r)       # Latitude
-        lam = atan2(y, x)       # Longitude
-        colat = pi/2 - phi
-        
+    def update_coefficients(self, acctim):
+        """Updates the constant values without breaking the compiled UFL tree."""
         chi = self.find_chi(acctim)
-        eq_tide = 0.0
-        if which_tide is None:
-            which_tide = [True] * len(chi)
+        for i, c in enumerate(self.constituents):
+            arg = self.frequencies[c] * acctim + chi[i]
+            # Mutate the existing Constant memory space in place
+            self.cos_coeffs[c].assign(numpy.cos(arg))
+            self.sin_coeffs[c].assign(numpy.sin(arg))
 
+    def update_forcing(self, tidal_field, eta, acctim):
+        if self.beta is None:
+            self.eta_input.project(eta)
+            self.sal_solver.solve()
 
-        # Semidiurnal (Species 2)
-        for i in range(4):
-            if which_tide[i]:
-                const = self.constituents[i]
-                eq_tide += self.amplitudes[const] * (sin(colat)**2) * \
-                           cos(self.frequencies[const] * acctim + 2*lam + chi[i])
-
-        # Diurnal (Species 1)
-        for i in range(4, 8):
-            if which_tide[i]:
-                const = self.constituents[i]
-                eq_tide += self.amplitudes[const] * sin(2*colat) * \
-                           cos(self.frequencies[const] * acctim + lam + chi[i])
-
-        # Long-period (Species 0)
-        for i in range(8, 11):
-            if which_tide[i]:
-                const = self.constituents[i]
-                eq_tide += self.amplitudes[const] * (3 * sin(phi)**2 - 1) * \
-                           cos(self.frequencies[const] * acctim + chi[i])
-
-        return eq_tide
-
-
-    def update_forcing(self, tidal_field, eta, acctim, elev_2d):
-        """
-        total_forcing_field: The field used in momentum (meters)
-        eta: Current free surface elevation Function
-        acctim: Current simulation time
-        """
-        # 1. Update the SAL potential via PDE solve
-        self.eta_input.assign(eta)
-        self.sal_solver.solve()
-
-        chi = self.find_chi(acctim)
-
-        # Species logic
-        eq_tide = self.get_equilibrium_tide_expression(acctim)
+        # 1. Update the numeric values of our constants (Extremely cheap NumPy math)
+        self.update_coefficients(acctim)
         
-        # Apply Love number (Earth tide reduction) and SAL (Self-Attraction/Loading)
-        if self.beta != None:
-            tidal_field.project(love_number * eq_expr - (beta * elev_2d))
+        # 2. Since self.eq_tide_expr uses fixed handles, Firedrake identifies 
+        # this expression as already compiled. Zero compilation overhead!
+        if self.beta is not None:
+            tidal_field.project((self.love_number * self.eq_tide_expr) - (self.beta * eta))
         else:
-            # 3. Combine: Total Potential = (Love * Eq) + SAL
-            # We project this onto the total_forcing_field
-            tidal_field.project(self.love_number * eq_tide + self.sal_potential)
-
-
+            tidal_field.project(self.love_number * self.eq_tide_expr + self.sal_potential)

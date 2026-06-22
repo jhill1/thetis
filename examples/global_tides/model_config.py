@@ -1,5 +1,4 @@
 from thetis import *
-import thetis.coordsys as coordsys
 import thetis.forcing as forcing
 import os
 import numpy
@@ -7,6 +6,22 @@ import types
 
 # Setup zones
 sim_tz = timezone.pytz.utc
+
+r_earth = 6371220.  # radius of Earth
+omega = 7.292e-5  # Earth's angular velocity
+
+
+def coords_xyz_to_lonlat(mesh):
+    """
+    Convert Earth-centered Cartesian coordinates to (longitude, latitude)
+    """
+    x, y, z = SpatialCoordinate(mesh)
+    z_norm = z / sqrt(x**2 + y**2 + z**2)
+    z_norm = min_value(max_value(z_norm, -1.0), 1.0)  # avoid silly roundoff errors
+    lat = asin(z_norm)
+    lon = atan2(y, x)
+    return lon, lat
+
 
 
 def read_station_data():
@@ -31,35 +46,6 @@ def read_station_data():
     return stations
 
 
-def interpolate_bathymetry(bathymetry_2d, dataset="etopo1", cap=10.0):
-    """
-    Interpolate a bathymetry field from some data set.
-
-    :arg bathymetry_2d: :class:`Function` to store the data in
-    :kwarg dataset: the data set name, which defines the NetCDF file name
-    :kwarg cap: minimum value to cap the bathymetry at in the shallows
-    """
-    if cap <= 0.0:
-        raise NotImplementedError(
-            "Bathymetry cap must be positive because"
-            " wetting and drying is not enabled in this example"
-        )
-    mesh = bathymetry_2d.function_space().mesh()
-
-    # Read data from file
-    with netCDF4.Dataset(f"{dataset}.nc", "r") as nc:
-        interp = si.RectBivariateSpline(
-            nc.variables["lat"][:],  # latitude
-            nc.variables["lon"][:],  # longitude
-            nc.variables["z"][:, :],  # elevation
-        )
-
-    # Interpolate at mesh vertices
-    lonlat_func = coord_system.get_mesh_lonlat_function(mesh)
-    lon, lat = lonlat_func.dat.data_ro.T
-    bathymetry_2d.dat.data[:] = numpy.maximum(-interp(lat, lon, grid=False), cap)
-
-
 def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **model_options):
     """
     Construct a :class:`FlowSolver2d` instance for inverse modelling
@@ -74,13 +60,12 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     """
 
     pwd = os.path.abspath(os.path.dirname(__file__))
-    h5_file_name = os.path.join(pwd, "north_sea_bathymetry.h5")
+    h5_file_name = os.path.join(pwd, "bathymetry.h5")
     with CheckpointFile(h5_file_name, "r") as f:
-        bathymetry_2d = f.load_function(mesh2d, "Bathymetry")
+        bathymetry_2d = f.load_function(mesh2d, "bathymetry")
 
     # Setup mesh and lonlat coords
-    lonlat = coord_system.get_mesh_lonlat_function(mesh2d)
-    lon, lat = lonlat
+    lon, lat =  coords_xyz_to_lonlat(mesh2d)
 
     # Setup Manning friction
     P1_2d = get_functionspace(mesh2d, "CG", 1)
@@ -88,91 +73,86 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     manning_2d.assign(3.0e-02)
 
     # Setup Coriolis forcing
-    omega = 7.292e-05
-    coriolis_2d = Function(P1_2d, name="Coriolis forcing")
-    coriolis_2d.interpolate(2 * omega * sin(lat * pi / 180.0))
+    x, y, z = SpatialCoordinate(mesh2d)
+    f_expr = 2 * omega * z / r_earth
+    coriolis_2d = Function(P1_2d)
+    coriolis_2d.interpolate(f_expr)
 
     # Setup temporal discretisation
     default_start_date = datetime.datetime(2022, 1, 1, tzinfo=sim_tz)
     default_end_date = datetime.datetime(2022, 1, 2, tzinfo=sim_tz)
     start_date = model_options.pop("start_date", default_start_date)
     end_date = model_options.pop("end_date", default_end_date)
-    dt = 3600.0
+    dt = 90.0
     t_export = 3600.0
     t_end = (end_date - start_date).total_seconds()
 
-    # 3. Create Function Spaces and Fields
-    # Use the solver's native elevation space (handles CG or DG automatically)
-    V_elev = solver_obj.function_spaces.H_2d 
-
-    tidal_forcing = TidalForcing(mesh2d, l_smooth=150000.0)
-    total_forcing_meters = Function(V_elev, name="Tidal_Forcing_Meters")
-    p_atm_tidal = Function(V_elev, name="Tidal_Pressure_Pascals")
 
     # Create solver
     solver_obj = solver2d.FlowSolver2d(mesh2d, bathymetry_2d)
     options = solver_obj.options
-    options.element_family = "dg-dg"
+    options.element_family = "bdm-dg"
     options.polynomial_degree = 1
     options.coriolis_frequency = coriolis_2d
     options.manning_drag_coefficient = manning_2d
-    options.horizontal_velocity_scale = Constant(1.5)
-    options.use_lax_friedrichs_velocity = True
     options.simulation_initial_date = start_date
     options.simulation_end_date = end_date
     options.simulation_export_time = t_export
-    options.swe_timestepper_type = "CrankNicolson"
-    options.swe_timestepper_options.use_semi_implicit_linearization = True
+    options.swe_timestepper_type = 'CrankNicolson'
     options.timestep = dt
+    options.horizontal_velocity_scale = Constant(10)
+    options.check_volume_conservation_2d = True
     options.fields_to_export = ["elev_2d", "uv_2d"]
     options.fields_to_export_hdf5 = []
+    options.horizontal_viscosity = Constant(100000)
+    options.update(model_options)
+
+    tidal_forcing = forcing.EquilibriumTidalForcing(mesh2d, l_smooth=150000.0)
+    total_forcing_meters = Function(P1_2d, name="Tidal_Forcing_Meters")
+    p_atm_tidal = Function(P1_2d, name="Tidal_Pressure_Pascals")
+
     options.atmospheric_pressure = p_atm_tidal
 
     # Constant physical parameters
     rho_0 = 1025.0  # Reference water density (kg/m^3)
     g = 9.81        # Gravitational acceleration (m/s^2)
 
-    # The mesh is quite coarse, so it is reasonable to solve the underlying
-    # linear systems by applying a full LU decomposition as a preconditioner
-    # CHECK THIS
     options.swe_timestepper_options.solver_parameters = {
-        "snes_type": "newtonls",
-        "ksp_type": "preonly",
-        "pc_type": "lu",
-        "pc_factor_mat_solver_type": "mumps",
-    }
+      'snes_type': 'newtonls',
+      'snes_rtol': 1e-4,
+      'ksp_rtol': 1e-4,
+      'ksp_type': 'gmres',
+      'pc_type': 'fieldsplit',
+   }
+    
     options.update(model_options)
     print_output(f"Exporting to {options.output_directory}")
-    solver_obj.create_equations()
+    solver_obj.create_function_spaces()
+
 
     # Set up gauges
-    if store_station_time_series:
-        for name, data in read_station_data().items():
-            sta_lat, sta_lon = data["latlon"]
-            sta_x, sta_y = coord_system.to_xy(sta_lon, sta_lat)
-            cb = TimeSeriesCallback2D(
-                solver_obj,
-                ["elev_2d"],
-                sta_x,
-                sta_y,
-                name,
-                append_to_log=False,
-            )
-            solver_obj.add_callback(cb)
+    #if store_station_time_series:
+    #    for name, data in read_station_data().items():
+    #        sta_lat, sta_lon = data["latlon"]
+    #        sta_x, sta_y = coord_system.to_xy(sta_lon, sta_lat)
+    #        cb = TimeSeriesCallback2D(
+    #            solver_obj,
+    #            ["elev_2d"],
+    #            sta_x,
+    #            sta_y,
+    #            name,
+    #            append_to_log=False,
+    #        )
+    #        solver_obj.add_callback(cb)
 
-    # Account for spinup
-    bnd_time = Constant(0.0)
-    if spinup:
-        ramp_t = t_end
-        elev_ramp = conditional(bnd_time < ramp_t, bnd_time / ramp_t, 1.0)
-    else:
-        elev_ramp = Constant(1.0)
-    tide_elev_expr_2d = elev_ramp * elev_tide_2d
 
-    # Setup boundary conditions for open ocean segments
+
+    # Setup boundary conditions for coastlines
     solver_obj.bnd_functions["shallow_water"] = {
-        223: {"elev": tide_elev_expr_2d, "uv": Constant(as_vector([0, 0]))},
+        223: {"elev": Constant(0.0)}
     }
+
+    #tide_height_file = VTKFile("tides.pvd")
 
     def update_forcings(t):
         """
@@ -182,13 +162,19 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
         # Extract the live water elevation field from the solver
         # (Firedrake handles parallel synchronization of this field automatically)
         current_eta = solver_obj.fields.elev_2d
-        tidal_forcing.update_forcing(total_forcing_meters, current_eta, t_new)
-        p_atm_tidal.assign(-rho_0 * g * total_forcing_meters)
         
         # Compute Equilibrium Tide + solve the PDE for SAL
         tidal_forcing.update_forcing(total_forcing_meters, current_eta, t)
+        # Account for spinup
+        elev_ramp = 1.0 
+        if spinup:
+            if t < t_end:
+                elev_ramp = t / t_end     
         
         # Convert meters of head into Pascals of pressure and assign to the solver option
-        p_atm_tidal.assign(-rho_0 * g * total_forcing_meters)
+        p_atm_tidal.assign(-rho_0 * g * total_forcing_meters * elev_ramp)
+
+        #tide_height_file.write(p_atm_tidal)
+
 
     return solver_obj, start_date, update_forcings
