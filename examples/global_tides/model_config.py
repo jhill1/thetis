@@ -103,7 +103,7 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     options.horizontal_velocity_scale = Constant(10)
     options.check_volume_conservation_2d = True
     options.fields_to_export = ["elev_2d", "uv_2d"]
-    options.fields_to_export_hdf5 = []
+    options.fields_to_export_hdf5 = ["elev_2d", "uv_2d"]
     options.horizontal_viscosity = Constant(100000)
     options.update(model_options)
 

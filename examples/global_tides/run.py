@@ -7,7 +7,7 @@ mesh2d = read_mesh_from_checkpoint('bathymetry.h5')
 solver_obj, start_time, update_forcings = construct_solver(
     mesh2d,
     start_date=datetime.datetime(2022, 1, 15, tzinfo=sim_tz),
-    end_date=datetime.datetime(2022, 1, 18, tzinfo=sim_tz),
+    end_date=datetime.datetime(2022, 2, 15, tzinfo=sim_tz),
 )
 solver_obj.load_state(
     14, outputdir="outputs_spinup", t=0, iteration=0, i_export=0

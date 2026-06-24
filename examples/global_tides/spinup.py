@@ -9,10 +9,10 @@ solver_obj, start_time, update_forcings = construct_solver(
     output_directory="outputs_spinup",
     spinup=True,
     start_date=datetime.datetime(2022, 1, 1, tzinfo=sim_tz),
-    end_date=datetime.datetime(2022, 1, 15, tzinfo=sim_tz),
+    end_date=datetime.datetime(2022, 2, 15, tzinfo=sim_tz),
     fields_to_export=["elev_2d", "uv_2d"],
     fields_to_export_hdf5=["elev_2d", "uv_2d"],
-    simulation_export_time=1800.0,
+    simulation_export_time=3600.0,
 )
 solver_obj.assign_initial_conditions(uv=Constant((1.0e-10,1e-10, 1e-10)))
 update_forcings(0.0)

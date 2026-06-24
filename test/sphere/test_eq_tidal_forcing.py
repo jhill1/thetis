@@ -35,7 +35,7 @@ def test_chi_time_evolution(tidal):
     # They should not be identical
     assert not np.allclose(chi_t0, chi_t12h)
 
-def test_sal_linearity(mesh, tidal, elev_2d):
+def test_sal_linearity(mesh, tidal):
     """The SAL PDE is linear; doubling eta should double the SAL potential."""
     V = tidal.sal_potential.function_space()
     eta = Function(V)
@@ -43,13 +43,13 @@ def test_sal_linearity(mesh, tidal, elev_2d):
     # Case 1: Constant unit elevation
     eta.assign(1.0)
     forcing_1 = Function(V)
-    tidal.update_forcing(forcing_1, eta, 0.0, elev_2d)
+    tidal.update_forcing(forcing_1, eta, 0.0)
     sal_1 = tidal.sal_potential.copy(deepcopy=True)
     
     # Case 2: Double elevation
     eta.assign(2.0)
     forcing_2 = Function(V)
-    tidal.update_forcing(forcing_2, eta, 0.0, elev_2d)
+    tidal.update_forcing(forcing_2, eta, 0.0)
     sal_2 = tidal.sal_potential.copy(deepcopy=True)
     
     # Check linearity: sal_2 should be approx 2 * sal_1
@@ -58,14 +58,14 @@ def test_sal_linearity(mesh, tidal, elev_2d):
     val2 = sal_2.dat.data_ro.max()
     assert np.isclose(val2, 2 * val1, rtol=1e-5)
 
-def test_equilibrium_tide_magnitude(mesh, tidal, elev_2d):
+def test_equilibrium_tide_magnitude(mesh, tidal):
     """Verify that the forcing field produces physically sensible values (~0.1-0.5m)."""
     V = tidal.sal_potential.function_space()
     eta = Function(V).assign(0.0) # No SAL effect for this test
     forcing = Function(V)
     
     # Update at t=0
-    tidal.update_forcing(forcing, eta, 0.0, elev_2d)
+    tidal.update_forcing(forcing, eta, 0.0)
     
     max_val = forcing.dat.data_ro.max()
     min_val = forcing.dat.data_ro.min()
@@ -76,7 +76,7 @@ def test_equilibrium_tide_magnitude(mesh, tidal, elev_2d):
     # Ensure it's not just returning zeros
     assert not np.isclose(max_val, 0.0)
 
-def test_sal_smoothing(mesh, tidal, elev_2d):
+def test_sal_smoothing(mesh, tidal):
     """Verify that l_smooth correctly spreads a localized spike in eta."""
     V = tidal.sal_potential.function_space()
     eta = Function(V)
@@ -84,7 +84,7 @@ def test_sal_smoothing(mesh, tidal, elev_2d):
     # Create a delta-like spike at one node
     eta.dat.data[0] = 10.0 
     
-    tidal.update_forcing(Function(V), eta, 0.0, elev_2d)
+    tidal.update_forcing(Function(V), eta, 0.0)
     sal = tidal.sal_potential
     
     # In a Helmholtz solve, a spike in input should lead to a 
