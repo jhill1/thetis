@@ -14,7 +14,7 @@ import uptide.tidal_netcdf
 from abc import ABC, abstractmethod, abstractproperty
 import os
 import numpy
-
+import datetime
 
 def compute_wind_stress(wind_u, wind_v, method='LargeYeager2009'):
     r"""
@@ -1168,7 +1168,7 @@ class EquilibriumTidalForcing:
         self.rho_w = 1025.0
         self.rho_e = 5515.0
         self.beta = beta
-        self.alpha = (self.rho_w / self.rho_e) * love_number 
+        self.alpha = (self.rho_w / self.rho_e) * love_number
         self.sal_potential = None
 
         self.frequencies = {
@@ -1185,30 +1185,31 @@ class EquilibriumTidalForcing:
         }
         self.constituents = list(self.frequencies.keys())
 
-        # Create a single persistent UFL expression for the equilibrium tide
-        # using time placeholder coefficients
-        self.spatial_components = {}
-        
-        # Pre-compute spatial coordinate geometry once
+        # === FIX 1: CALCULATE STATIC CHI FOR THE 2022 SIMULATION START ===
+        epoch_1975 = datetime.datetime(1975, 1, 1, tzinfo=datetime.timezone.utc)
+        sim_start = datetime.datetime(2022, 1, 1, tzinfo=datetime.timezone.utc)
+        # Seconds elapsed between 1975 and 2022
+        delta_seconds = (sim_start - epoch_1975).total_seconds()
+
+        # Calculate astronomical arguments ONCE for Jan 1, 2022.
+        # These remain frozen as a static property of the simulation.
+        self.static_chi = self.find_chi(delta_seconds)
+        # ================================================================
+
+        # Persistent UFL Tree Setup
         x, y, z = SpatialCoordinate(self.mesh)
         r = sqrt(x**2 + y**2 + z**2)
-        phi = asin(z / r)       # Latitude
-        lam = atan2(y, x)       # Longitude
+        phi = asin(z / r)
+        lam = atan2(y, x)
         colat = pi/2 - phi
 
-        # Define time coefficients as mutable Constants
-        # This keeps the symbolic tree identical while changing numerical values!
         self.cos_coeffs = {c: Constant(0.0) for c in self.constituents}
         self.sin_coeffs = {c: Constant(0.0) for c in self.constituents}
-
-        # Build one permanent symbolic UFL expression structure
         self.eq_tide_expr = 0.0
 
         # Semidiurnal (Species 2)
         for i in range(4):
             c = self.constituents[i]
-            # Trigonometric identity: cos(A + B) = cos(A)cos(B) - sin(A)sin(B)
-            # A = spatial (2*lam), B = temporal (omega*t + chi)
             spatial_cos = self.amplitudes[c] * (sin(colat)**2) * cos(2*lam)
             spatial_sin = self.amplitudes[c] * (sin(colat)**2) * sin(2*lam)
             self.eq_tide_expr += (self.cos_coeffs[c] * spatial_cos - self.sin_coeffs[c] * spatial_sin)
@@ -1226,22 +1227,16 @@ class EquilibriumTidalForcing:
             spatial_shape = self.amplitudes[c] * (3 * sin(phi)**2 - 1)
             self.eq_tide_expr += self.cos_coeffs[c] * spatial_shape
 
-        # Pre-compile the global PDE solver for SAL if active
         if beta is None:
             V = FunctionSpace(mesh, "DG", 1)
             self.sal_potential = Function(V, name="SAL_Potential")
             u = TrialFunction(V)
             v = TestFunction(V)
             self.eta_input = Function(V)
-            
             a = (u * v + Constant(self.l_smooth**2) * inner(grad(u), grad(v))) * dx
             L = Constant(self.alpha) * self.eta_input * v * dx
-            
             prob = LinearVariationalProblem(a, L, self.sal_potential)
-            self.sal_solver = LinearVariationalSolver(
-                prob, 
-                solver_parameters={'ksp_type': 'cg', 'ksp_rtol': 1e-4, 'pc_type': 'gamg'}
-            )
+            self.sal_solver = LinearVariationalSolver(prob, solver_parameters={'ksp_type': 'cg', 'ksp_rtol': 1e-4, 'pc_type': 'gamg'})
 
     def find_chi(self, acctim):
         t1, t2 = 0.7499657911, 0.0000273785
@@ -1255,17 +1250,16 @@ class EquilibriumTidalForcing:
 
         chi = [
             2*h0-2*s0, 0.0, 2*h0-3*s0+p0, 2*h0,              # M2, S2, N2, K2
-            h0+90, h0-2*s0-90, h0-90, h0-3*s0+p0-90,       # K1, O1, P1, Q1
-            2*s0, s0-p0, 2*h0                              # MF, MM, SSA
+            h0+90, h0-2*s0-90, h0-90, h0-3*s0+p0-90,         # K1, O1, P1, Q1
+            2*s0, s0-p0, 2*h0                                # MF, MM, SSA
         ]
         return numpy.radians(chi)
 
     def update_coefficients(self, acctim):
-        """Updates the constant values without breaking the compiled UFL tree."""
-        chi = self.find_chi(acctim)
+        # === FIX 2: USE THE FROZEN STATIC_CHI HERE ===
         for i, c in enumerate(self.constituents):
-            arg = self.frequencies[c] * acctim + chi[i]
-            # Mutate the existing Constant memory space in place
+            # Time variation is now cleanly dictated by standard frequencies
+            arg = self.frequencies[c] * acctim + self.static_chi[i]
             self.cos_coeffs[c].assign(numpy.cos(arg))
             self.sin_coeffs[c].assign(numpy.sin(arg))
 
@@ -1274,11 +1268,8 @@ class EquilibriumTidalForcing:
             self.eta_input.project(eta)
             self.sal_solver.solve()
 
-        # 1. Update the numeric values of our constants (Extremely cheap NumPy math)
         self.update_coefficients(acctim)
-        
-        # 2. Since self.eq_tide_expr uses fixed handles, Firedrake identifies 
-        # this expression as already compiled. Zero compilation overhead!
+
         if self.beta is not None:
             tidal_field.project((self.love_number * self.eq_tide_expr) - (self.beta * eta))
         else:

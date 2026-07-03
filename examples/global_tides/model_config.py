@@ -83,7 +83,7 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     default_end_date = datetime.datetime(2022, 1, 2, tzinfo=sim_tz)
     start_date = model_options.pop("start_date", default_start_date)
     end_date = model_options.pop("end_date", default_end_date)
-    dt = 90.0
+    dt = 180
     t_export = 3600.0
     t_end = (end_date - start_date).total_seconds()
 
@@ -100,7 +100,6 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     options.simulation_export_time = t_export
     options.swe_timestepper_type = 'CrankNicolson'
     options.timestep = dt
-    options.horizontal_velocity_scale = Constant(10)
     options.check_volume_conservation_2d = True
     options.fields_to_export = ["elev_2d", "uv_2d"]
     options.fields_to_export_hdf5 = ["elev_2d", "uv_2d"]
@@ -148,9 +147,9 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
 
 
     # Setup boundary conditions for coastlines
-    solver_obj.bnd_functions["shallow_water"] = {
-        223: {"elev": Constant(0.0)}
-    }
+    #solver_obj.bnd_functions["shallow_water"] = {
+    #    223: {"elev": Constant(0.0)}
+    #}
 
     #tide_height_file = VTKFile("tides.pvd")
 
@@ -168,8 +167,8 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
         # Account for spinup
         elev_ramp = 1.0 
         if spinup:
-            if t < t_end:
-                elev_ramp = t / t_end     
+            if t < 432000: # 5 days
+                elev_ramp = t / 432000   
         
         # Convert meters of head into Pascals of pressure and assign to the solver option
         p_atm_tidal.assign(-rho_0 * g * total_forcing_meters * elev_ramp)

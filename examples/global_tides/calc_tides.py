@@ -11,10 +11,10 @@ from model_config import *
 output_dir = 'analysis'
 create_directory(output_dir)
 
-thetis_dir = "outputs"
-t_end = 2592000 
+thetis_dir = "outputs_spinup"
+t_end = 3888000 
 t_export = 3600
-t_start = 864000
+t_start = 1296000
 
 # 1. Load the mesh from the first checkpoint
 # (Firedrake automatically handles parallel distribution if run with mpiexec)
@@ -62,7 +62,7 @@ print_output("Configuring tidal constituents...")
 constituents = ["M2", "S2", "O1", "K1"]
 
 tide = uptide.Tides(constituents)
-tide.set_initial_time(datetime.datetime(2022, 1, 15, tzinfo=sim_tz))
+tide.set_initial_time(datetime.datetime(2022, 1, 1, tzinfo=sim_tz))
 
 # Pre-allocate containers for harmonic outputs
 num_constituents = len(constituents)
