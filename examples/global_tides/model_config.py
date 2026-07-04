@@ -117,7 +117,7 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     options.check_volume_conservation_2d = True
     options.fields_to_export = ["elev_2d", "uv_2d"]
     options.fields_to_export_hdf5 = ["elev_2d", "uv_2d"]
-    options.horizontal_viscosity = Constant(1000)
+    options.horizontal_viscosity = Constant(100)
     options.update(model_options)
 
     tidal_forcing = forcing.EquilibriumTidalForcing(mesh2d, l_smooth=150000.0)
