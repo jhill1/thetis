@@ -3,6 +3,7 @@ import thetis.forcing as forcing
 import os
 import numpy
 import types
+import csv
 
 # Setup zones
 sim_tz = timezone.pytz.utc
@@ -10,6 +11,20 @@ sim_tz = timezone.pytz.utc
 r_earth = 6371220.  # radius of Earth
 omega = 7.292e-5  # Earth's angular velocity
 
+def coords_lonlat_to_xyz(lon, lat):
+    """
+    Convert (longitude, latitude) on a spherical shell of given radius 
+    to Earth-centered Cartesian coordinates (x, y, z).
+    """
+    # x = R * cos(lat) * cos(lon)
+    # y = R * cos(lat) * sin(lon)
+    # z = R * sin(lat)
+    
+    x = r_earth * cos(lat) * cos(lon)
+    y = r_earth * cos(lat) * sin(lon)
+    z = r_earth * sin(lat)
+    
+    return x, y, z
 
 def coords_xyz_to_lonlat(mesh):
     """
@@ -34,12 +49,11 @@ def read_station_data():
         corresponding region code used in the CMEMS
         database
     """
-    pwd = os.path.abspath(os.path.dirname(__file__))
-    with open(os.path.join(pwd, "stations_elev.csv"), "r") as csvfile:
+    pwd = "."#os.path.abspath(os.path.dirname(__file__))
+    with open(os.path.join(pwd, "uhslc_station_locations.csv"), "r") as csvfile:
         stations = {
-            d["name"]: {
-                "latlon": (float(d["latitude"]), float(d["longitude"])),
-                "region": d["region"],
+            d["Station Name"]: {
+                "latlon": (float(d["Latitude"]), float(d["Longitude"])),
             }
             for d in csv.DictReader(csvfile, delimiter=",", skipinitialspace=True)
         }
@@ -128,24 +142,59 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     print_output(f"Exporting to {options.output_directory}")
     solver_obj.create_function_spaces()
 
-
     # Set up gauges
-    #if store_station_time_series:
-    #    for name, data in read_station_data().items():
-    #        sta_lat, sta_lon = data["latlon"]
-    #        sta_x, sta_y = coord_system.to_xy(sta_lon, sta_lat)
-    #        cb = TimeSeriesCallback2D(
-    #            solver_obj,
-    #            ["elev_2d"],
-    #            sta_x,
-    #            sta_y,
-    #            name,
-    #            append_to_log=False,
-    #        )
-    #        solver_obj.add_callback(cb)
+    station_coords = {}
+    points = []
 
+    if store_station_time_series:
+        for name, data in read_station_data().items():
+            sta_lat, sta_lon = data["latlon"]
+            sta_x, sta_y, sta_z = coords_lonlat_to_xyz(sta_lon, sta_lat)
+            
+            # Track the original intended coordinates for matching later
+            station_coords[name] = numpy.array([sta_x, sta_y, sta_z])
+            points.append([sta_x, sta_y, sta_z])
 
+    # Batch-filter the points using a single VertexOnlyMesh
+    vom = VertexOnlyMesh(mesh2d, points, missing_points_behaviour='warn')
 
+    # MPI-Safe Step: Gather all surviving points across all ranks ? 
+    # This ensures every rank loops over the EXACT same list of valid stations.
+    local_points = vom.coordinates.dat.data_ro
+    global_points_list = COMM_WORLD.allgather(local_points)
+
+    # Flatten the gathered lists, filtering out empty arrays from ranks with no points
+    valid_arrays = [arr for arr in global_points_list if arr.size > 0]
+    if valid_arrays:
+        global_valid_points = numpy.vstack(valid_arrays)
+    else:
+        global_valid_points = numpy.empty((0, 3))
+
+    # Re-identify and register the callbacks collectively
+    for point in global_valid_points:
+        best_name = None
+        min_dist = float('inf')
+        
+        # Find the matching station name by calculating the minimum distance
+        for name, orig_xyz in station_coords.items():
+            dist = numpy.linalg.norm(point - orig_xyz)
+            if dist < min_dist:
+                min_dist = dist
+                best_name = name
+                
+        # If the point matches an original gauge position within tolerance, add it
+        if min_dist < 1e-3:
+            cb = TimeSeriesCallback2D(
+                solver_obj,
+                ["elev_2d"],
+                point[0],         # x
+                point[1],         # y
+                best_name,        # location_name (Position 5)
+                z=point[2],       # z coordinate explicitly passed as a keyword argument
+                append_to_log=False,
+            )
+            solver_obj.add_callback(cb)
+            print(f"Successfully registered diagnostic gauge: {best_name}")
     # Setup boundary conditions for coastlines
     #solver_obj.bnd_functions["shallow_water"] = {
     #    223: {"elev": Constant(0.0)}
