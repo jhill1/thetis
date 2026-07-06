@@ -13,36 +13,19 @@ import uptide
 # ==========================================
 # CONFIGURATION
 # ==========================================
-START_DATE = "2023-01-01T00:00:00Z"
-END_DATE = "2023-12-31T23:00:00Z"
+START_DATE = "2022-01-01T00:00:00Z"
+END_DATE = "2022-02-15T00:00:00Z"
 CONSTITUENTS = ['M2', 'S2', 'N2', 'K2', 'K1', 'O1', 'P1', 'Q1']
 DATASET_ID = "global_hourly_fast"  # 'global_hourly_rqds' for research quality (slower updates)
 
 # Directories
 OBS_DIR = "observations"
 OUT_DIR = "processed_results"
-MODEL_DIR = "outputs"
+MODEL_DIR = "outputs_spinup"
 os.makedirs(OBS_DIR, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 
 COORD_FILE = os.path.join(OBS_DIR, "uhslc_coordinates.csv")
-
-# ==========================================
-# 1. FETCH COORDINATES
-# ==========================================
-def fetch_coordinates():
-    """Downloads a distinct list of stations and coordinates if it doesn't exist."""
-    if not os.path.exists(COORD_FILE):
-        print(f"Fetching station coordinates from UHSLC...")
-        url = f"https://uhslc.soest.hawaii.edu/erddap/tabledap/{DATASET_ID}.csv?station,longitude,latitude&distinct()"
-        response = requests.get(url)
-        response.raise_for_status()
-        
-        with open(COORD_FILE, "w") as f:
-            f.write(response.text)
-        print("Coordinates saved.")
-    else:
-        print("Coordinates file already exists.")
 
 # ==========================================
 # 2. DOWNLOAD OBSERVATIONS (UHSLC)
@@ -53,13 +36,15 @@ def download_station_data(station_id, start_date, end_date):
     
     if os.path.exists(csv_file):
         print(f"  -> Station {station_id} data already downloaded.")
-        return pd.read_csv(csv_file, parse_dates=['time (UTC)'], skiprows=[1]) # Skip ERDDAP unit row
+        # FIX: Change 'time (UTC)' to 'time'
+        return pd.read_csv(csv_file, parse_dates=['time'], skiprows=[1]) 
     
     print(f"  -> Downloading Station {station_id} from UHSLC...")
+    
     # Build ERDDAP URL
     url = (f"https://uhslc.soest.hawaii.edu/erddap/tabledap/{DATASET_ID}.csv"
-           f"?station,time,sea_level"
-           f"&station=%22{station_id}%22"
+           f"?station_name%2Ctime%2csea_level"
+           f"&station_name=%22{station_id}%22"
            f"&time>={start_date}&time<={end_date}")
     
     try:
@@ -67,8 +52,8 @@ def download_station_data(station_id, start_date, end_date):
         response.raise_for_status()
         with open(csv_file, "w") as f:
             f.write(response.text)
-        # Read and skip the second row (which contains ERDDAP unit strings like 'UTC', 'meters')
-        return pd.read_csv(csv_file, parse_dates=['time (UTC)'], skiprows=[1])
+        # FIX: Change 'time (UTC)' to 'time'
+        return pd.read_csv(csv_file, parse_dates=['time'], skiprows=[1])
     except requests.exceptions.RequestException as e:
         print(f"     Failed to download station {station_id}. It may not exist in this timeframe.")
         return None
@@ -88,19 +73,21 @@ def get_harmonics(station_id, df_obs):
     
     print(f"  -> Calculating constituents for station {station_id} via uptide...")
     
-    # Clean data: drop NaNs for harmonic analysis
-    df_clean = df_obs.dropna(subset=['sea_level (m)']).copy()
+    # Clean data: drop NaNs using the corrected column name 'sea_level'
+    df_clean = df_obs.dropna(subset=['sea_level']).copy()
     if df_clean.empty:
         return None, None
 
     tides = uptide.Tides(CONSTITUENTS)
-    # Use the first timestamp as the reference epoch
-    ref_time = df_clean['time (UTC)'].iloc[0].to_pydatetime()
+    # Use 'time' instead of 'time (UTC)'
+    ref_time = df_clean['time'].iloc[0].to_pydatetime()
     tides.set_initial_time(ref_time)
     
     # Convert times to seconds since reference time
-    t_seconds = (df_clean['time (UTC)'] - df_clean['time (UTC)'].iloc[0]).dt.total_seconds().values
-    elev_vals = df_clean['sea_level (m)'].values
+    t_seconds = (df_clean['time'] - df_clean['time'].iloc[0]).dt.total_seconds().values
+    
+    # CRITICAL: Convert millimeters to meters for your model comparison!
+    elev_vals = df_clean['sea_level'].values / 1000.0 
     
     # Perform harmonic analysis
     amp, pha = uptide.harmonic_analysis(tides, elev_vals, t_seconds)
@@ -156,7 +143,7 @@ def process_station(model_file):
     json_file = os.path.join(OBS_DIR, f"station_{sta}_constituents.json")
     with open(json_file, "r") as f:
         ref_time_str = json.load(f)['reference_time']
-        ref_time = datetime.datetime.fromisoformat(ref_time_str)
+        ref_time = datetime.datetime.fromisoformat(ref_time_str).replace(tzinfo=None)
 
     tides = uptide.Tides(CONSTITUENTS)
     tides.set_initial_time(ref_time)
@@ -165,7 +152,7 @@ def process_station(model_file):
     t_predict_seconds = np.array([(mt - ref_time).total_seconds() for mt in model_time])
     
     # Predict tide based on calculated amplitude and phase
-    pred_elev = uptide.predict(tides, amp, pha, t_predict_seconds)
+    pred_elev = tides.from_amplitude_phase(amp, pha, t_predict_seconds)
     
     # 5. Save Combined Data
     out_df = pd.DataFrame({
@@ -197,7 +184,6 @@ def process_station(model_file):
 # MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
-    fetch_coordinates()
     
     # Find all model files in the target directory
     model_files = glob.glob(os.path.join(MODEL_DIR, "diagnostic_timeseries_*_elev.hdf5"))
