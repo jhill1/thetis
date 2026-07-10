@@ -30,9 +30,9 @@ with timed_stage('initialising bathymetry'):
         p_lat = math.degrees(lat.evaluate(xyz, None, None, None))
         bvector[i] = -1.0 * bathy.get_val((p_lon, p_lat))
 
-    bvector[bvector < 50] = 50
+    #bvector[bvector < 10] = 10
 
-smoothen_bathymetry(bathymetry2d)
+#smoothen_bathymetry(bathymetry2d)
 chk = CheckpointFile('bathymetry.h5', 'w')
 chk.save_mesh(mesh2d)
 chk.save_function(bathymetry2d, name='bathymetry')

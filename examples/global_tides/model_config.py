@@ -118,6 +118,11 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     options.fields_to_export = ["elev_2d", "uv_2d"]
     options.fields_to_export_hdf5 = ["elev_2d", "uv_2d"]
     options.horizontal_viscosity = Constant(100)
+    options.use_wetting_and_drying = True
+    #options.use_automatic_wetting_and_drying_alpha = True
+    #options.wetting_and_drying_alpha_min = Constant(0.5)
+    #options.wetting_and_drying_alpha_max = Constant(100.0)
+    options.wetting_and_drying_alpha = Constant(100.0)
     options.update(model_options)
 
     tidal_forcing = forcing.EquilibriumTidalForcing(mesh2d, l_smooth=150000.0)
@@ -131,7 +136,8 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
     g = 9.81        # Gravitational acceleration (m/s^2)
 
     options.swe_timestepper_options.solver_parameters = {
-      'snes_type': 'newtonls',
+      "snes_type": "newtonls",
+      "snes_linesearch_type": "bt",
       'snes_rtol': 1e-4,
       'ksp_rtol': 1e-4,
       'ksp_type': 'gmres',
