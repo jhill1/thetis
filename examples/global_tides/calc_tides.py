@@ -53,7 +53,7 @@ for t in thetis_times:
         gc.collect()
     count += 1
 
-print_output("Working out min/max/range using vectorized NumPy...")
+print_output("Working out min/max/range")
 max_fs = np.max(elev_data_set, axis=0)
 min_fs = np.min(elev_data_set, axis=0)
 detector_tidal_range = max_fs - min_fs

@@ -60,7 +60,7 @@ def read_station_data():
     return stations
 
 
-def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **model_options):
+def construct_solver(mesh2d, spinup=False, store_station_time_series=False, **model_options):
     """
     Construct a :class:`FlowSolver2d` instance for inverse modelling
     in the North Sea.
@@ -161,52 +161,52 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
             station_coords[name] = numpy.array([sta_x, sta_y, sta_z])
             points.append([sta_x, sta_y, sta_z])
 
-    # Batch-filter the points using a single VertexOnlyMesh
-    vom = VertexOnlyMesh(mesh2d, points, missing_points_behaviour='warn')
+        # Batch-filter the points using a single VertexOnlyMesh
+        vom = VertexOnlyMesh(mesh2d, points, missing_points_behaviour='warn')
 
-    # MPI-Safe Step: Gather all surviving points across all ranks ? 
-    # This ensures every rank loops over the EXACT same list of valid stations.
-    local_points = vom.coordinates.dat.data_ro
-    global_points_list = COMM_WORLD.allgather(local_points)
+        # MPI-Safe Step: Gather all surviving points across all ranks ? 
+        # This ensures every rank loops over the EXACT same list of valid stations.
+        local_points = vom.coordinates.dat.data_ro
+        global_points_list = COMM_WORLD.allgather(local_points)
 
-    # Flatten the gathered lists, filtering out empty arrays from ranks with no points
-    valid_arrays = [arr for arr in global_points_list if arr.size > 0]
-    if valid_arrays:
-        global_valid_points = numpy.vstack(valid_arrays)
-    else:
-        global_valid_points = numpy.empty((0, 3))
+        # Flatten the gathered lists, filtering out empty arrays from ranks with no points
+        valid_arrays = [arr for arr in global_points_list if arr.size > 0]
+        if valid_arrays:
+            global_valid_points = numpy.vstack(valid_arrays)
+        else:
+            global_valid_points = numpy.empty((0, 3))
 
-    # Re-identify and register the callbacks collectively
-    for point in global_valid_points:
-        best_name = None
-        min_dist = float('inf')
-        
-        # Find the matching station name by calculating the minimum distance
-        for name, orig_xyz in station_coords.items():
-            dist = numpy.linalg.norm(point - orig_xyz)
-            if dist < min_dist:
-                min_dist = dist
-                best_name = name
-                
-        # If the point matches an original gauge position within tolerance, add it
-        if min_dist < 1e-3:
-            cb = TimeSeriesCallback2D(
-                solver_obj,
-                ["elev_2d"],
-                point[0],         # x
-                point[1],         # y
-                best_name,        # location_name (Position 5)
-                z=point[2],       # z coordinate explicitly passed as a keyword argument
-                append_to_log=False,
-            )
-            solver_obj.add_callback(cb)
-            print(f"Successfully registered diagnostic gauge: {best_name}")
+        # Re-identify and register the callbacks collectively
+        for point in global_valid_points:
+            best_name = None
+            min_dist = float('inf')
+            
+            # Find the matching station name by calculating the minimum distance
+            for name, orig_xyz in station_coords.items():
+                dist = numpy.linalg.norm(point - orig_xyz)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_name = name
+                    
+            # If the point matches an original gauge position within tolerance, add it
+            if min_dist < 1e-3:
+                cb = TimeSeriesCallback2D(
+                    solver_obj,
+                    ["elev_2d"],
+                    point[0],         # x
+                    point[1],         # y
+                    best_name,        # location_name (Position 5)
+                    z=point[2],       # z coordinate explicitly passed as a keyword argument
+                    append_to_log=False,
+                )
+                solver_obj.add_callback(cb)
+                print(f"Successfully registered diagnostic gauge: {best_name}")
     # Setup boundary conditions for coastlines
     #solver_obj.bnd_functions["shallow_water"] = {
     #    223: {"elev": Constant(0.0)}
     #}
 
-    #tide_height_file = VTKFile("tides.pvd")
+    tide_height_file = VTKFile("tides.pvd")
 
     def update_forcings(t):
         """
@@ -222,13 +222,13 @@ def construct_solver(mesh2d, spinup=False, store_station_time_series=True, **mod
         # Account for spinup
         elev_ramp = 1.0 
         if spinup:
-            if t < 432000: # 5 days
-                elev_ramp = t / 432000   
+            if t < 86400: # 1 days
+                elev_ramp = t / 86400   
         
         # Convert meters of head into Pascals of pressure and assign to the solver option
         p_atm_tidal.assign(-rho_0 * g * total_forcing_meters * elev_ramp)
 
-        #tide_height_file.write(p_atm_tidal)
+        tide_height_file.write(p_atm_tidal)
 
 
     return solver_obj, start_date, update_forcings
